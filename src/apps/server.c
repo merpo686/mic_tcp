@@ -13,7 +13,7 @@ int main()
     addr.ip_addr = "127.0.0.1";
     addr.port = 1234;
 
-
+    printf("ici");
     if ((sockfd = mic_tcp_socket(SERVER)) == -1)
     {
         printf("[TSOCK] Erreur a la creation du socket MICTCP!\n");
@@ -23,7 +23,7 @@ int main()
     {
         printf("[TSOCK] Creation du socket MICTCP: OK\n");
     }
-
+    printf("la");
     if (mic_tcp_bind(sockfd, addr) == -1)
     {
         printf("[TSOCK] Erreur lors du bind du socket MICTCP!\n");
