@@ -1,13 +1,16 @@
 #include <mictcp.h>
 #include <api/mictcp_core.h>
-
+//start mode
+start_mode start_m;
 //socket local
 mic_tcp_sock sock;
 //adresse de dest
 mic_tcp_sock_addr addr_dest;
 //pdu_global global 
 mic_tcp_pdu pdu_global;
-
+//variable globale num de seq et de ack
+unsigned int PA=0;
+unsigned int PE=0;
 /*  
  * Permet de créer un socket entre l’application et MIC-TCP
  * Retourne le descripteur du socket ou bien -1 en cas d'erreur
@@ -16,6 +19,7 @@ int mic_tcp_socket(start_mode sm)
 {
     int result = -1;
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
+    start_m=sm;
     result = initialize_components(sm); /* Appel obligatoire */
     set_loss_rate(0);
     if (result!=-1)
@@ -87,7 +91,24 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
         pdu_global.header.dest_port=addr_dest.port;
         pdu_global.payload.size=mesg_size;
         pdu_global.payload.data=mesg;
+        pdu_global.header.seq_num=PE;
+        pdu_global.header.ack='0';
         IP_send(pdu_global,addr_dest);
+        mic_tcp_pdu pdu;
+        int retour;
+        retour=IP_recv(&pdu,&addr_dest,1);
+        printf("retour =%d \n" , retour);
+        int numb=0;
+        printf("%c, %d, %d \n",pdu.header.ack,pdu.header.ack_num,pdu_global.header.seq_num);
+        while (!(pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num &&numb<100))
+        {
+            printf("ack not received \n");
+            numb++;
+            mic_tcp_send(mic_sock, mesg, mesg_size);
+            retour=IP_recv(&pdu,&addr_dest,1); 
+            printf("retour while=%d \n" , retour);
+        }
+        PE=(PE+1)%2;
         return sock.fd;
     }
     return -1;
@@ -140,4 +161,12 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     app_buffer_put(pdu.payload);
+    if (pdu.header.ack=='0')
+    {
+        pdu_global.header.ack='1';
+        pdu_global.header.ack_num=pdu.header.seq_num;
+        printf("envoie ack \n");
+        IP_send(pdu_global,addr);
+    }
+    
 }
