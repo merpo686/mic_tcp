@@ -21,7 +21,7 @@ int mic_tcp_socket(start_mode sm)
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
     start_m=sm;
     result = initialize_components(sm); /* Appel obligatoire */
-    set_loss_rate(0);
+    set_loss_rate(5);
     if (result!=-1)
     {
         sock.state=IDLE;
@@ -100,15 +100,17 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
         printf("retour =%d \n" , retour);
         int numb=0;
         printf("%c, %d, %d \n",pdu.header.ack,pdu.header.ack_num,pdu_global.header.seq_num);
-        while (!(pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num &&numb<100))
+        while (!(pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num) && numb<5)
         {
             printf("ack not received \n");
             numb++;
-            mic_tcp_send(mic_sock, mesg, mesg_size);
-            retour=IP_recv(&pdu,&addr_dest,1); 
+            IP_send(pdu_global,addr_dest);
+            retour=IP_recv(&pdu,&addr_dest,100); 
+            printf("%c, %d, %d \n",pdu.header.ack,pdu.header.ack_num,pdu_global.header.seq_num);
             printf("retour while=%d \n" , retour);
         }
         PE=(PE+1)%2;
+        printf("ack received \n");
         return sock.fd;
     }
     return -1;
