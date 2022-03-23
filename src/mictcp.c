@@ -11,6 +11,10 @@ mic_tcp_pdu pdu_global;
 //variable globale num de seq et de ack
 unsigned int PA=0;
 unsigned int PE=0;
+//reprise des pertes : tableau des 10 derniers messages
+double pertes[10] ={0}; 
+//taux de pertes admissibles
+double perte_admi=0.5;
 /*  
  * Permet de créer un socket entre l’application et MIC-TCP
  * Retourne le descripteur du socket ou bien -1 en cas d'erreur
@@ -21,7 +25,7 @@ int mic_tcp_socket(start_mode sm)
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
     start_m=sm;
     result = initialize_components(sm); /* Appel obligatoire */
-    set_loss_rate(5);
+    set_loss_rate(80);
     if (result!=-1)
     {
         sock.state=IDLE;
@@ -93,24 +97,36 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
         pdu_global.payload.data=mesg;
         pdu_global.header.seq_num=PE;
         pdu_global.header.ack='0';
+        pertes[PE] = 0;
         IP_send(pdu_global,addr_dest);
         mic_tcp_pdu pdu;
-        int retour;
-        retour=IP_recv(&pdu,&addr_dest,1);
-        printf("retour =%d \n" , retour);
-        int numb=0;
+        IP_recv(&pdu,&addr_dest,1);
         printf("%c, %d, %d \n",pdu.header.ack,pdu.header.ack_num,pdu_global.header.seq_num);
-        while (!(pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num) && numb<5)
+        if (pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num)
         {
-            printf("ack not received \n");
-            numb++;
-            IP_send(pdu_global,addr_dest);
-            retour=IP_recv(&pdu,&addr_dest,100); 
-            printf("%c, %d, %d \n",pdu.header.ack,pdu.header.ack_num,pdu_global.header.seq_num);
-            printf("retour while=%d \n" , retour);
+            pertes[PE]=1;
         }
-        PE=(PE+1)%2;
+        else 
+        {
+            double sum=0;
+            for (int i=0; i<10;i++){
+                sum+=pertes[i];
+            }
+            printf("Ack not received. Taux de réussite actuel: %f \n",perte_admi + sum/10);
+            while (!(pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num) && (perte_admi + sum/10)<1)
+            {//attention si taux de pertes trop eleve, terminal rempli de messages dropped et ce n'est pas une erreur de codage
+                IP_send(pdu_global,addr_dest);
+                IP_recv(&pdu,&addr_dest,10); //attends 10(s?) avant de relancer
+                if (pdu.header.ack=='1')
+                {
+                    pertes[PE]=1;
+                    sum+=1/10;
+                }
+            }
+        }
+        PE=(PE+1)%10;
         printf("ack received \n");
+
         return sock.fd;
     }
     return -1;
