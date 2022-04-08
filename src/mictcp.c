@@ -12,9 +12,9 @@ mic_tcp_pdu pdu_global;
 unsigned int PA=0;
 unsigned int PE=0;
 //reprise des pertes : tableau des 10 derniers messages
-double pertes[10] ={0}; 
+double pertes[10] ={1}; 
 //taux de pertes admissibles
-double perte_admi=0.5;
+double perte_admi=0.2;
 /*  
  * Permet de créer un socket entre l’application et MIC-TCP
  * Retourne le descripteur du socket ou bien -1 en cas d'erreur
@@ -25,7 +25,7 @@ int mic_tcp_socket(start_mode sm)
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
     start_m=sm;
     result = initialize_components(sm); /* Appel obligatoire */
-    set_loss_rate(80);
+    set_loss_rate(0);
     if (result!=-1)
     {
         sock.state=IDLE;
@@ -88,46 +88,73 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
  */
 int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 {
-    printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
-    if (sock.fd==mic_sock)
+  mic_tcp_pdu pdu={0};
+  printf("\n[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
+  if (sock.fd==mic_sock)
     {
-        pdu_global.header.source_port=sock.addr.port;
-        pdu_global.header.dest_port=addr_dest.port;
-        pdu_global.payload.size=mesg_size;
-        pdu_global.payload.data=mesg;
-        pdu_global.header.seq_num=PE;
-        pdu_global.header.ack='0';
-        pertes[PE] = 0;
-        IP_send(pdu_global,addr_dest);
-        mic_tcp_pdu pdu;
-        IP_recv(&pdu,&addr_dest,1);
-        printf("%c, %d, %d \n",pdu.header.ack,pdu.header.ack_num,pdu_global.header.seq_num);
-        if (pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num)
-        {
-            pertes[PE]=1;
-        }
-        else 
-        {
-            double sum=0;
-            for (int i=0; i<10;i++){
-                sum+=pertes[i];
-            }
-            printf("Ack not received. Taux de réussite actuel: %f \n",perte_admi + sum/10);
-            while (!(pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num) && (perte_admi + sum/10)<1)
-            {//attention si taux de pertes trop eleve, terminal rempli de messages dropped et ce n'est pas une erreur de codage
-                IP_send(pdu_global,addr_dest);
-                IP_recv(&pdu,&addr_dest,10); //attends 10(s?) avant de relancer
-                if (pdu.header.ack=='1')
-                {
-                    pertes[PE]=1;
-                    sum+=1/10;
-                }
-            }
-        }
-        PE=(PE+1)%10;
-        printf("ack received \n");
+      pdu_global.header.source_port=sock.addr.port;
+      pdu_global.header.dest_port=addr_dest.port;
+      pdu_global.payload.size=mesg_size;
+      pdu_global.payload.data=mesg;
+      pdu_global.header.seq_num=PE;
+      pdu_global.header.ack='0';
+      pdu_global.header.ack_num=-1;
+      pdu_global.header.syn='0';
+      pdu_global.header.fin='0';
+      pertes[PE] = 0;
+      
+      // La regle du stop and wait est qu'une retransmission n'est seulement declenchee qu'au timeout et pas en reaction a une reception d'un PDU inapproprie
+      
+      int Timeout=0; // Timeout=-1 => il y a eu timeout
+      int nbRetransmit=5;
+      // on anticipe la perte pour la prise de déc
+      // precalcul du taux de reussite actuel ..
+      double sum=0;
+      for (int i=0; i<10;i++){
+	    sum+=pertes[i];
+      }
+     
+      int Sent=-1;
+      int Retransmettre=(perte_admi + (sum)/10) < 1;// à 1 => retransmission necessaire 
+      printf("Estimation avant envoi dans le cas où l'on perd le paquet,\nTaux de perte : %f,Taux Livraison:%f/10 et Retransmettre=%d \n",1-sum/10,sum,Retransmettre);
+      
+      // Transmission PDU 
+      Sent=IP_send(pdu_global,addr_dest);
+      do {
+	Timeout=IP_recv(&pdu,&addr_dest,100);
+	if (Timeout == -1) { // il y a eu timeout
+	  if (Retransmettre) {  // il y a necessite de retransmisison 
+	      // Retransmission 
+	      Sent=IP_send(pdu_global,addr_dest);
+	      nbRetransmit--;
+	    }
+	}
+	else // PDU recu
+	  {
+	    if (pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num) { // c'est le bon ACK
+	      pertes[PE]=1;
+	      printf("pdu %d bien acquitte - PE=%d\n",pdu_global.header.seq_num,PE);
+	    }
+	    else 
+	      {
+		    printf("BAD Ack received. Taux de réussite actuel: %f \n",perte_admi + sum/10);	
+	      }
+	    
+	  }
+	
+      }
+      while (Timeout==-1 && Retransmettre && nbRetransmit>0);
 
-        return sock.fd;
+      // fin  while , on a fini de traiter le Message
+      if (nbRetransmit==0 || (Timeout==-1 && !Retransmettre)) { // Nbre de retransmission max atteint ou perte admissible, marquer paquet perdu
+	//	pertes[PE] deja initialisées à 0 (on part de l'hypothese d'une perte) on pourra enlever cette condition pour la version optimisee
+	printf("perte admissible ou Nbr retrans max atteint !  Nb Retrans restante: %d,PE=%d ! \n",nbRetransmit,PE);
+
+      }
+      PE=(PE+1)%10;
+	//        printf("ack received \n");
+
+        return Sent;
     }
     return -1;
 }
@@ -141,7 +168,7 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 int mic_tcp_recv (int socket, char* mesg, int max_mesg_size)
 {
     int result = -1;
-    printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
+    printf("\n[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     if (sock.fd==socket)
     {
         mic_tcp_payload p;
@@ -150,6 +177,7 @@ int mic_tcp_recv (int socket, char* mesg, int max_mesg_size)
         result=app_buffer_get(p);
         mesg=p.data;
     }
+    printf("[MIC-TCP-RCV] Message recu:%s\n",mesg);
     return result;
 }
 
@@ -177,14 +205,28 @@ int mic_tcp_close (int socket)
  */
 void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
 {
-    printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
-    app_buffer_put(pdu.payload);
+
+  printf("[MIC-TCP] Appel de la fonction: %d;%d",pdu.header.seq_num,pdu.header.ack_num); printf(__FUNCTION__); printf("\n");
     if (pdu.header.ack=='0')
-    {
+   { 
         pdu_global.header.ack='1';
-        pdu_global.header.ack_num=pdu.header.seq_num;
-        printf("envoie ack \n");
-        IP_send(pdu_global,addr);
-    }
-    
+        pdu_global.header.source_port=sock.addr.port;
+        pdu_global.header.dest_port=addr_dest.port;
+        pdu_global.header.seq_num=-1;
+        pdu_global.header.ack_num=pdu.header.seq_num; //si l'emetteur a decidé de zapper des numéros, on se recale dessus
+        pdu_global.header.syn='0';
+        pdu_global.header.fin='0';
+        printf("envoie ack %d \n",pdu_global.header.ack_num);
+        while(IP_send(pdu_global,addr)==-1){
+            printf("echec d'envoi du ack, on le renvoie");
+        } 
+        if (  pdu.header.seq_num>=PA)  { 
+            app_buffer_put(pdu.payload);
+            printf("[MIC-process] Message attendu recu:%s\n",pdu.payload.data);
+        }
+        else {
+            printf("Mauvais num de seq. Message déjà reçu ou déjà abandonné. Envoi d'un ack pour que l'envoyeur passe au prochain");
+        }
+        PA=(pdu.header.seq_num+1) % 10;
+   } 
 }
