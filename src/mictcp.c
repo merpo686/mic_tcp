@@ -23,6 +23,7 @@ double perte_admi=0.2;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
+int loss_rate;
 
 int mic_tcp_socket(start_mode sm)
 {
@@ -30,7 +31,17 @@ int mic_tcp_socket(start_mode sm)
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
     start_m=sm;
     result = initialize_components(sm); /* Appel obligatoire */
-    set_loss_rate(51);
+    if (sm==CLIENT){
+        printf("Veuillez rentrer le loss_rate souhaité svp");
+        scanf("%d",&loss_rate);
+        if (loss_rate>100){
+            loss_rate=100;
+        }
+        set_loss_rate(loss_rate);
+    }
+    else{
+        set_loss_rate(0);
+    }
     if (result!=-1)
     {
         sock.state=IDLE;
@@ -87,6 +98,7 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
         mic_tcp_pdu syn={0};
         mic_tcp_pdu synack={0};
         syn.header.syn='1';
+        syn.header.ack_num=loss_rate; //on transmet le loss_rate pendant la connexion: c'est le client qui decide
         syn.header.source_port=sock.addr.port;
         syn.header.dest_port=addr.port;
         int nbboucle=100;
@@ -270,6 +282,9 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
     }
     else if(pdu.header.syn=='1'){
         printf("Syn reçu, on envoie le synack\n");
+        printf("Loss_rate reçu: %d\n",pdu.header.ack_num);
+        loss_rate=pdu.header.ack_num;
+        set_loss_rate(loss_rate);
         sock.state=SYN_RECEIVED;
         pdu_global.header.ack='1';
         pdu_global.header.source_port=sock.addr.port;
