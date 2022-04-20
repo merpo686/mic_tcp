@@ -21,7 +21,7 @@ int mic_tcp_socket(start_mode sm)
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
     start_m=sm;
     result = initialize_components(sm); /* Appel obligatoire */
-    set_loss_rate(5);
+    set_loss_rate(1);
     if (result!=-1)
     {
         sock.state=IDLE;
@@ -84,6 +84,7 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
  */
 int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 {
+    mic_tcp_pdu pdu={0};
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     if (sock.fd==mic_sock)
     {
@@ -93,25 +94,42 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
         pdu_global.payload.data=mesg;
         pdu_global.header.seq_num=PE;
         pdu_global.header.ack='0';
-        IP_send(pdu_global,addr_dest);
-        mic_tcp_pdu pdu;
-        int retour;
-        retour=IP_recv(&pdu,&addr_dest,1);
-        printf("retour =%d \n" , retour);
-        int numb=0;
-        printf("%c, %d, %d \n",pdu.header.ack,pdu.header.ack_num,pdu_global.header.seq_num);
-        while (!(pdu.header.ack=='1' && pdu.header.ack_num==pdu_global.header.seq_num) && numb<5)
-        {
-            printf("ack not received \n");
-            numb++;
-            IP_send(pdu_global,addr_dest);
-            retour=IP_recv(&pdu,&addr_dest,100); 
-            printf("%c, %d, %d \n",pdu.header.ack,pdu.header.ack_num,pdu_global.header.seq_num);
-            printf("retour while=%d \n" , retour);
+        pdu_global.header.ack_num=-1;
+        pdu_global.header.syn='0';
+        pdu_global.header.fin='0';
+        int Timeout=0; // Timeout=-1 => il y a eu timeout
+        int nbRetransmit=5;
+        int Sent=-1; 
+        // Transmission PDU 
+        Sent=IP_send(pdu_global,addr_dest);
+        do {
+            Timeout=IP_recv(&pdu,&addr_dest,100);
+            if (Timeout == -1) { // il y a eu timeout
+                // Retransmission 
+                printf("Timeout. Send again\n");	
+                Sent=IP_send(pdu_global,addr_dest);
+                nbRetransmit--;
+            }
+            else // PDU recu
+            {
+                if (pdu.header.ack=='1' && pdu.header.ack_num==PE) { // c'est le bon ACK
+                printf("pdu %d bien acquitte - PE=%d\n",pdu_global.header.seq_num,PE);
+                }
+                else 
+                {
+                    printf("BAD Ack received. Send again\n");	
+                    Sent=IP_send(pdu_global,addr_dest);
+                    nbRetransmit--;
+                }
+            }
+        }
+        while (Timeout==-1 && nbRetransmit>0);
+        // fin  while , on a fini de traiter le Message
+        if (nbRetransmit==0 || (Timeout==-1)) { // Nbre de retransmission max atteint
+            printf("Nbr retrans max atteint !PE=%d ! \n",PE);
         }
         PE=(PE+1)%2;
-        printf("ack received \n");
-        return sock.fd;
+        return Sent;
     }
     return -1;
 }
@@ -162,13 +180,25 @@ int mic_tcp_close (int socket)
 void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
-    app_buffer_put(pdu.payload);
     if (pdu.header.ack=='0')
-    {
+    { 
         pdu_global.header.ack='1';
-        pdu_global.header.ack_num=pdu.header.seq_num;
-        printf("envoie ack \n");
-        IP_send(pdu_global,addr);
-    }
-    
+        pdu_global.header.source_port=sock.addr.port;
+        pdu_global.header.dest_port=addr_dest.port;
+        pdu_global.header.seq_num=-1;
+        pdu_global.header.ack_num=PA;
+        pdu_global.header.syn='0';
+        pdu_global.header.fin='0';
+        printf("envoie ack %d \n",pdu_global.header.ack_num);
+        while(IP_send(pdu_global,addr)==-1){
+            printf("echec d'envoi du ack, on le renvoie");
+        } 
+        if (  pdu.header.seq_num>=PA)  { 
+            app_buffer_put(pdu.payload);
+        }
+        else {
+            printf("mauvais num\n");
+        }
+        PA=(pdu.header.seq_num+1) % 2;
+    } 
 }
